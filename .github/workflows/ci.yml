@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # the web repo owns the shared schema: its prisma migrations build the test database
+      - uses: actions/checkout@v4
+        with:
+          repository: hackclub/ari
+          path: ari-next
+          sparse-checkout: prisma/migrations
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - run: test -z "$(gofmt -l cmd internal)"
+
+      # named directories, not ./...: the private repository at private/ also holds the web app's code
+      - run: go vet ./cmd/... ./internal/...
+
+      - run: go test -count=1 ./cmd/... ./internal/...
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+          ARI_MIGRATIONS_DIR: ${{ github.workspace }}/ari-next/prisma/migrations

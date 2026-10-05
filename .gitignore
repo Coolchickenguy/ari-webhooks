@@ -1,0 +1,7 @@
+.env
+*.local
+/ariwebhooks
+# the private repository (hackclub/ari-private), a separate checkout until it becomes a submodule
+/private
+
+.DS_Store
