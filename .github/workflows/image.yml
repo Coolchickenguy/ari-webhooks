@@ -1,0 +1,74 @@
+name: image
+
+# never add pull_request here: the job reads the private submodule and a fork must not reach it
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: ${{ github.repository_owner }}/ari-webhooks-production
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # SUBMODULES_TOKEN is a token that can read hackclub/ari-private; github.token cannot
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          token: ${{ secrets.SUBMODULES_TOKEN || github.token }}
+
+      - name: verify private submodule
+        run: test -d private/webhooks/cmd/ariwebhooks
+
+      - uses: docker/setup-buildx-action@v4.2.0
+
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # a package made from a public repository starts public, so an empty image creates it first and the check below runs before any private layer is pushed
+      - name: push an empty image
+        run: |
+          emptyContext=$(mktemp -d)
+          echo empty > "$emptyContext/empty"
+          printf 'FROM scratch\nCOPY empty /empty\n' > "$emptyContext/Dockerfile"
+          docker buildx build --push --provenance=false -t "ghcr.io/$IMAGE_NAME:empty" "$emptyContext"
+
+      - name: refuse to push into a public package
+        run: |
+          token=$(curl -fsS "https://ghcr.io/token?scope=repository:$IMAGE_NAME:pull" | jq -r .token)
+          status=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "https://ghcr.io/v2/$IMAGE_NAME/tags/list")
+          if [ "$status" = 200 ]; then # ghcr answers an anonymous pull with 200 only when the package is public
+            echo "::error::ghcr.io/$IMAGE_NAME is public, make it private in the package settings and run this again"
+            exit 1
+          fi
+
+      - id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ghcr.io/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-,format=short
+
+      # the cache holds private layers, so it lives in the same private package and not in the actions cache a fork pr can read
+      - uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          build-args: edition=private
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=ghcr.io/${{ env.IMAGE_NAME }}:cache
+          cache-to: type=registry,ref=ghcr.io/${{ env.IMAGE_NAME }}:cache,mode=max
