@@ -53,10 +53,16 @@ func runGit(ctx context.Context, args []string, dir string, timeout time.Duratio
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(append(os.Environ(),
+	cmd.Env = append([]string{ // a minimal environment: the process env may hold tokens and proxy settings git would honour
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
 		"GIT_TERMINAL_PROMPT=0", // never prompt for credentials; fail fast on private repos
 		"GIT_ASKPASS=echo",
-	), env...)
+		"GIT_CONFIG_NOSYSTEM=1", // the box's /etc/gitconfig must not add credential helpers or url rewrites
+	}, env...)
+	if tmpDir := os.Getenv("TMPDIR"); tmpDir != "" {
+		cmd.Env = append(cmd.Env, "TMPDIR="+tmpDir)
+	}
 	cmd.WaitDelay = 2 * time.Second        // force-kill grace: git blocked on network IO can ignore SIGTERM
 	stdout := &cappedWriter{max: 64 << 20} // 64MB of log or listing covers any legitimate repo
 	stderr := &cappedWriter{max: 64 << 10}

@@ -51,13 +51,26 @@ func (s *Service) recordDelivery(ctx context.Context, programId, status string, 
 	}
 }
 
+func (s *Service) recentBadSignatures(ctx context.Context, programId string) int {
+	var count int
+	err := s.Pool.QueryRow(ctx, `
+		select count(*) from "WebhookDelivery"
+		where "programId" = $1 and status = 'BAD_SIGNATURE'
+		  and "receivedAt" >= now() - interval '60 seconds'`, // the window the bad-signature audit cap applies to
+		programId).Scan(&count)
+	if err != nil {
+		slog.Warn("bad signature count failed", "programId", programId, "err", err)
+	}
+	return count
+}
+
 func (s *Service) findRecentAccepted(ctx context.Context, programId, sha string) (string, bool) {
 	var id string
 	// The join gates the retry dedup on the submission still being OPEN. Without it a
 	// byte-identical legitimate resubmit within the hour (student clicks Resubmit after
 	// an auto-reject without changing anything) is answered "duplicate" with the id of
 	// the already-DECIDED submission, the sender rebinds to it believing it is queued,
-	// and the ship strands outside every review queue (Macondo ship 6014, 2026-08-04).
+	// and the ship strands outside every review queue.
 	// Parked ships (second pass, fraud review) count as open: they are the same
 	// undelivered ship, so a retry rebinding to them is correct.
 	err := s.Pool.QueryRow(ctx, `

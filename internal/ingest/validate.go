@@ -96,7 +96,7 @@ func validate(raw []byte) validated {
 	var hackatimeProjects, disallowedHackatime []string
 	if hp, present := p["hackatime_projects"]; present {
 		list, isArray := hp.([]any)
-		if !isArray {
+		if !isArray || len(list) > 50 { // every project is fetched from Hackatime per capture; more than this is never a real ship
 			return invalid("hackatime_projects")
 		}
 		for _, e := range list {

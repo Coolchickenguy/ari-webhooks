@@ -15,8 +15,12 @@ func (s *Server) ingest(c fiber.Ctx) error {
 	programId := c.Params("program")
 	rawBody := append([]byte(nil), c.Body()...)
 	result := s.Ingest.ProcessIngest(c.Context(), programId,
-		rawBody, c.Get(signature.SignatureHeader), c.Query("shipped_at"))
-	slog.InfoContext(c.Context(), "ingest request completed",
+		rawBody, c.Get(signature.SignatureHeader), c.Get(signature.TimestampHeader), c.Query("shipped_at"))
+	level := slog.LevelInfo
+	if result.Body["error"] == "bad_signature" {
+		level = slog.LevelDebug // unsigned requests arrive in floods and say nothing about the program's traffic
+	}
+	slog.Log(c.Context(), level, "ingest request completed",
 		"programId", programId,
 		"httpStatus", result.Status,
 		"result", result.Body["status"],
@@ -25,13 +29,14 @@ func (s *Server) ingest(c fiber.Ctx) error {
 		"submissionId", result.Body["id"],
 		"payloadBytes", len(rawBody),
 		"signaturePresent", c.Get(signature.SignatureHeader) != "",
+		"timestampPresent", c.Get(signature.TimestampHeader) != "",
 		"durationMs", time.Since(startedAt).Milliseconds())
 	return c.Status(result.Status).JSON(result.Body)
 }
 
 func (s *Server) withdraw(c fiber.Ctx) error {
 	result := s.Ingest.ProcessWithdraw(c.Context(), c.Params("program"),
-		append([]byte(nil), c.Body()...), c.Get(signature.SignatureHeader))
+		append([]byte(nil), c.Body()...), c.Get(signature.SignatureHeader), c.Get(signature.TimestampHeader))
 	return c.Status(result.Status).JSON(result.Body)
 }
 

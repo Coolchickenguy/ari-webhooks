@@ -11,6 +11,7 @@ func TestSanitizeEventRemovesPayloadAndQuery(t *testing.T) {
 		URL:         "https://ari.example/api/ingest/program",
 		Data:        `{"private":"submission"}`,
 		QueryString: "api_key=secret",
+		Headers:     map[string]string{"X-Ari-Signature": "deadbeef", "Authorization": "Bearer token"},
 	}}
 
 	sanitizeEvent(event, nil)
@@ -18,8 +19,8 @@ func TestSanitizeEventRemovesPayloadAndQuery(t *testing.T) {
 	if event.Request.URL != "https://ari.example/api/ingest/program" {
 		t.Fatalf("a url with no hidden prefix must stay as it is: %s", event.Request.URL)
 	}
-	if event.Request.Data != "" || event.Request.QueryString != "" {
-		t.Fatalf("private request data remained: data=%q query=%q", event.Request.Data, event.Request.QueryString)
+	if event.Request.Data != "" || event.Request.QueryString != "" || len(event.Request.Headers) != 0 {
+		t.Fatalf("private request data remained: data=%q query=%q headers=%v", event.Request.Data, event.Request.QueryString, event.Request.Headers)
 	}
 }
 

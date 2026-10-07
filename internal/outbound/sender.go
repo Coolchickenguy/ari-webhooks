@@ -15,16 +15,25 @@ import (
 	"time"
 
 	"github.com/hackclub/ari-webhooks/internal/signature"
+	"github.com/hackclub/ari-webhooks/internal/ssrf"
 )
 
 var errRedirectBlocked = errors.New("redirect blocked")
 
-var httpClient = &http.Client{
-	Timeout: 10 * time.Second, // a hung connection must not dangle the retry loop
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		return errRedirectBlocked // a public host must not 30x into the internal network
-	},
+func newClient(transport http.RoundTripper) *http.Client {
+	return &http.Client{
+		Timeout:   10 * time.Second, // a hung connection must not dangle the retry loop
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return errRedirectBlocked // a public host must not 30x into the internal network
+		},
+	}
 }
+
+var (
+	httpClient               = newClient(ssrf.Transport()) // every send is re-vetted at dial time, so a destination that rebinds to an internal address after the URL check still gets no connection
+	privateDestinationClient = newClient(http.DefaultTransport)
+)
 
 var whitespaceRun = regexp.MustCompile(`\s+`)
 
@@ -34,7 +43,7 @@ type attemptResult struct {
 	errorDetail string
 }
 
-func sendOnce(ctx context.Context, deliveryId, url, secret string, rawBody []byte) attemptResult {
+func sendOnce(ctx context.Context, client *http.Client, deliveryId, url, secret string, rawBody []byte) attemptResult {
 	timestamp := time.Now().Unix()
 	sig := signature.SignOutbound(secret, deliveryId, timestamp, rawBody)
 
@@ -47,7 +56,7 @@ func sendOnce(ctx context.Context, deliveryId, url, secret string, rawBody []byt
 	req.Header.Set(signature.TimestampHeader, strconv.FormatInt(timestamp, 10))
 	req.Header.Set(signature.DeliveryIdHeader, deliveryId)
 
-	res, err := httpClient.Do(req)
+	res, err := client.Do(req)
 	if err != nil {
 		return attemptResult{errorDetail: describeSendError(err)}
 	}
@@ -67,6 +76,9 @@ func sendOnce(ctx context.Context, deliveryId, url, secret string, rawBody []byt
 func describeSendError(err error) string {
 	if errors.Is(err, errRedirectBlocked) {
 		return "redirect blocked (destination tried to redirect)"
+	}
+	if errors.Is(err, ssrf.ErrUnsafeAddress) {
+		return "destination resolves to a private or reserved address"
 	}
 	var netErr net.Error
 	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {

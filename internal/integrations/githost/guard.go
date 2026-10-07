@@ -16,12 +16,20 @@ var (
 	infoRefsTail = regexp.MustCompile(`/info/refs(\?.*)?$`)
 )
 
-var redirectClient = &http.Client{
-	Timeout: 10 * time.Second,
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse
-	},
+func newRedirectClient(transport http.RoundTripper) *http.Client {
+	return &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
+
+var (
+	redirectClient            = newRedirectClient(ssrf.Transport()) // every hop is re-vetted at dial time, so a name that rebinds after the DNS check still cannot reach the internal network
+	privateHostRedirectClient = newRedirectClient(http.DefaultTransport)
+)
 
 func (f *Fetcher) urlIsSafeResolved(ctx context.Context, raw string) bool {
 	if f.AllowPrivateHosts {
@@ -52,7 +60,11 @@ func (f *Fetcher) resolveRedirectedBase(ctx context.Context, repoUrl string) str
 		if err != nil {
 			return repoUrl
 		}
-		res, err := redirectClient.Do(req)
+		client := redirectClient
+		if f.AllowPrivateHosts {
+			client = privateHostRedirectClient // the httptest server is loopback, which the vetted dialer refuses
+		}
+		res, err := client.Do(req)
 		if err != nil {
 			return repoUrl
 		}

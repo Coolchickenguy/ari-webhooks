@@ -86,6 +86,13 @@ func (p *Pipeline) Handle(ctx context.Context, j jobs.Job) jobs.Outcome {
 		infraNote = noteWith(result.Notes, "github_unavailable") // GitHub itself was down or throttling: says nothing about the repo either
 	}
 	if infraNote != "" {
+		if j.TimeoutRetries >= 6 { // after six 5-10 minute retries a host that never finishes a clone has had the better part of an hour: promote with what was captured instead of letting one tarpit keep taking the clone slot
+			p.Reject.LogEvidenceIssue(ctx, j.SubmissionId, "capture", j.Attempt+1, infraNote, result.Notes, true)
+			if perr := p.promoteAndGate(ctx, j.SubmissionId); perr != nil {
+				return jobs.RetryAt(time.Now().Add(time.Minute), j.Attempt, j.TimeoutRetries, perr.Error())
+			}
+			return jobs.Done()
+		}
 		if j.TimeoutRetries == 0 { // one audit entry per timeout episode is enough
 			p.Reject.LogEvidenceIssue(ctx, j.SubmissionId, "capture", j.Attempt+1,
 				infraNote+" - retrying every ~5min until it clones or the 6h sweep rejects it", result.Notes, false)

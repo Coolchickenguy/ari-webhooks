@@ -22,12 +22,20 @@ type Result struct {
 	Error   string
 }
 
-var client = &http.Client{
-	Timeout: 10 * time.Second,
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse // a 3xx is accepted without following; also closes redirect-to-private SSRF
-	},
+func newClient(transport http.RoundTripper) *http.Client {
+	return &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse // a 3xx is accepted without following; also closes redirect-to-private SSRF
+		},
+	}
 }
+
+var (
+	client            = newClient(ssrf.Transport()) // every connection is re-vetted at dial time, so a name that rebinds after the DNS check still cannot reach the internal network
+	privateHostClient = newClient(http.DefaultTransport)
+)
 
 var ipv4Literal = regexp.MustCompile(`^\d{1,3}(\.\d{1,3}){3}$`)
 
@@ -39,7 +47,7 @@ func isBlocked(status int) bool {
 	return status == 401 || status == 403 || status == 429
 }
 
-// AllowPrivateHosts bypasses the SSRF guard for httptest targets. TEST ONLY.
+// AllowPrivateHosts bypasses the SSRF guard, including the dial-time check, for httptest targets. TEST ONLY.
 var AllowPrivateHosts = false
 
 func guardUrl(ctx context.Context, rawUrl string) (safe, transient bool) {
@@ -105,7 +113,11 @@ func send(ctx context.Context, method, rawUrl string) (int, error) {
 	// datacenter IP while the page is perfectly alive in a browser.
 	req.Header.Set("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 	req.Header.Set("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	res, err := client.Do(req)
+	c := client
+	if AllowPrivateHosts {
+		c = privateHostClient // the httptest target is loopback, which the vetted dialer refuses
+	}
+	res, err := c.Do(req)
 	if err != nil {
 		return 0, err
 	}

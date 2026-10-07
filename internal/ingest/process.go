@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -36,7 +37,7 @@ type Service struct {
 	OnDisallowedProject func(ctx context.Context, submissionId string)
 }
 
-func (s *Service) ProcessIngest(ctx context.Context, programId string, rawBody []byte, sigHeader, queryShippedAt string) Result {
+func (s *Service) ProcessIngest(ctx context.Context, programId string, rawBody []byte, sigHeader, timestampHeader, queryShippedAt string) Result {
 	program, err := s.loadProgram(ctx, programId)
 	if err != nil {
 		slog.Error("program load failed", "programId", programId, "err", err)
@@ -60,8 +61,10 @@ func (s *Service) ProcessIngest(ctx context.Context, programId string, rawBody [
 			secret = ""
 		}
 	}
-	if secret == "" || !signature.VerifyInbound(secret, rawBody, sigHeader) { // signature before any payload work
-		record("BAD_SIGNATURE", 401, "", "", "")
+	if secret == "" || !signature.VerifyInboundAt(secret, rawBody, sigHeader, timestampHeader, time.Now()) { // signature before any payload work
+		if s.recentBadSignatures(ctx, program.id) < 20 { // past this many unsigned requests in the window the audit table stops growing: a flood must not fill it with rows nobody will read
+			record("BAD_SIGNATURE", 401, "", "", "")
+		}
 		return Result{401, map[string]any{"error": "bad_signature"}}
 	}
 
@@ -126,7 +129,7 @@ func (s *Service) ProcessIngest(ctx context.Context, programId string, rawBody [
 	return Result{202, map[string]any{"status": "accepted", "id": submissionId}}
 }
 
-func (s *Service) ProcessWithdraw(ctx context.Context, programId string, rawBody []byte, sigHeader string) Result {
+func (s *Service) ProcessWithdraw(ctx context.Context, programId string, rawBody []byte, sigHeader, timestampHeader string) Result {
 	program, err := s.loadProgram(ctx, programId)
 	if err != nil {
 		slog.Error("program load failed", "programId", programId, "err", err)
@@ -139,7 +142,7 @@ func (s *Service) ProcessWithdraw(ctx context.Context, programId string, rawBody
 	if program.secretEnc != "" {
 		secret, _ = s.Codec.Decrypt(program.secretEnc)
 	}
-	if secret == "" || !signature.VerifyInbound(secret, rawBody, sigHeader) { // same HMAC contract as ingest
+	if secret == "" || !signature.VerifyInboundAt(secret, rawBody, sigHeader, timestampHeader, time.Now()) { // same HMAC contract as ingest
 		return Result{401, map[string]any{"error": "bad_signature"}}
 	}
 

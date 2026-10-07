@@ -143,7 +143,11 @@ func (w *Worker) processDelivery(ctx context.Context, deliveryId string) {
 		return
 	}
 
-	result := sendOnce(ctx, deliveryId, *endpointUrl, secret, []byte(*payload))
+	client := httpClient
+	if w.AllowPrivateDestinations {
+		client = privateDestinationClient // the httptest receiver is loopback, which the vetted dialer refuses
+	}
+	result := sendOnce(ctx, client, deliveryId, *endpointUrl, secret, []byte(*payload))
 	slog.Info("outbound attempt",
 		"deliveryId", deliveryId, "event", event, "urlOrigin", ssrf.OriginOf(*endpointUrl),
 		"attempt", attempts+1, "delivered", result.delivered, "httpStatus", intOrNil(result.httpStatus), "errorDetail", result.errorDetail)

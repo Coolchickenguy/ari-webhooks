@@ -1,10 +1,15 @@
 package signature
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fixture struct {
@@ -46,6 +51,62 @@ func TestVerifyInboundNodeVector(t *testing.T) {
 	}
 	if VerifyInbound("wrong", []byte(f.Body), f.Inbound) {
 		t.Fatal("wrong secret accepted")
+	}
+}
+
+func signTimestamped(secret string, ts int64, body string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(strconv.FormatInt(ts, 10) + "." + body))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func TestVerifyInboundAt(t *testing.T) {
+	now := time.Unix(1_750_000_000, 0)
+	secret, body := "whsec_test", `{"external_id":"p1"}`
+	ts := now.Unix() - 120
+	sig := signTimestamped(secret, ts, body)
+
+	if !VerifyInboundAt(secret, []byte(body), sig, strconv.FormatInt(ts, 10), now) {
+		t.Fatal("timestamped signature inside the window rejected")
+	}
+	if !VerifyInboundAt(secret, []byte(body), sig, " "+strconv.FormatInt(ts, 10)+" ", now) {
+		t.Fatal("surrounding whitespace on the timestamp must be tolerated")
+	}
+	if VerifyInboundAt(secret, []byte(body), sig, "", now) {
+		t.Fatal("a timestamped signature must not verify as a body-only one")
+	}
+	if VerifyInboundAt(secret, []byte(body), sig, strconv.FormatInt(ts+1, 10), now) {
+		t.Fatal("a timestamp the signature does not cover accepted")
+	}
+	if VerifyInboundAt(secret, []byte(body+"x"), sig, strconv.FormatInt(ts, 10), now) {
+		t.Fatal("modified body accepted")
+	}
+	if VerifyInboundAt(secret, []byte(body), sig, "not-a-number", now) {
+		t.Fatal("non-integer timestamp accepted")
+	}
+	if VerifyInboundAt(secret, []byte(body), sig, "1750000000.5", now) {
+		t.Fatal("fractional timestamp accepted")
+	}
+
+	for _, skew := range []int64{-301, 301, -86400, 86400} {
+		stale := now.Unix() + skew
+		if VerifyInboundAt(secret, []byte(body), signTimestamped(secret, stale, body), strconv.FormatInt(stale, 10), now) {
+			t.Fatalf("timestamp %ds from now accepted", skew)
+		}
+	}
+	for _, skew := range []int64{-300, 300} {
+		edge := now.Unix() + skew
+		if !VerifyInboundAt(secret, []byte(body), signTimestamped(secret, edge, body), strconv.FormatInt(edge, 10), now) {
+			t.Fatalf("timestamp %ds from now, on the edge of the window, rejected", skew)
+		}
+	}
+
+	legacy := loadFixture(t)
+	if !VerifyInboundAt(legacy.Secret, []byte(legacy.Body), legacy.Inbound, "", now) {
+		t.Fatal("legacy body-only signature without a timestamp header rejected")
+	}
+	if VerifyInboundAt(legacy.Secret, []byte(legacy.Body), legacy.Inbound, strconv.FormatInt(now.Unix(), 10), now) {
+		t.Fatal("a body-only signature must not verify once the sender claims a timestamp")
 	}
 }
 

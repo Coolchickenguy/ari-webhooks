@@ -66,6 +66,9 @@ func TestValidateFieldStrings(t *testing.T) {
 		{"evidence non-array", mutate(func(m map[string]string) { m["evidence"] = `"commits"` }), "evidence"},
 		{"evidence null", mutate(func(m map[string]string) { m["evidence"] = `null` }), "evidence"},
 		{"hackatime_projects non-string entry", mutate(func(m map[string]string) { m["hackatime_projects"] = `[3]` }), "hackatime_projects"},
+		{"hackatime_projects too many", mutate(func(m map[string]string) {
+			m["hackatime_projects"] = `[` + strings.Repeat(`"project",`, 50) + `"project"]`
+		}), "hackatime_projects"},
 		{"collaborators too many", mutate(func(m map[string]string) {
 			m["collaborators"] = `[` + strings.Repeat(`{"email": "a@x.com"},`, 10) + `{"email": "b@x.com"}]`
 		}), "collaborators"},
@@ -111,6 +114,14 @@ func TestValidateFieldStrings(t *testing.T) {
 		if v.field != tc.field {
 			t.Errorf("%s: field %q, want %q", tc.name, v.field, tc.field)
 		}
+	}
+}
+
+func TestValidateHackatimeProjectsAtTheCap(t *testing.T) {
+	m := base()
+	m["hackatime_projects"] = `[` + strings.Repeat(`"project",`, 49) + `"project"]`
+	if v := validate(render(m)); !v.ok {
+		t.Fatalf("fifty projects must still validate, got %q", v.field)
 	}
 }
 

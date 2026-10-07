@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -99,12 +100,24 @@ func sign(secret, body string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+func signAt(secret string, ts int64, body string) string {
+	return sign(secret, strconv.FormatInt(ts, 10)+"."+body)
+}
+
 func (f fixture) post(t *testing.T, path, body, sig string) (int, map[string]any) {
+	t.Helper()
+	return f.postAt(t, path, body, sig, "")
+}
+
+func (f fixture) postAt(t *testing.T, path, body, sig, timestamp string) (int, map[string]any) {
 	t.Helper()
 	req := httptest.NewRequest("POST", path, strings.NewReader(body))
 	req.Header.Set("content-type", "application/json")
 	if sig != "" {
 		req.Header.Set("x-ari-signature", sig)
+	}
+	if timestamp != "" {
+		req.Header.Set("x-ari-timestamp", timestamp)
 	}
 	res, err := f.app.Test(req, fiber.TestConfig{Timeout: 30 * time.Second})
 	if err != nil {
@@ -265,7 +278,7 @@ func TestIngestEndToEnd(t *testing.T) {
 	// The retry dedup only matches while the deduped submission is still OPEN. Once
 	// it is withdrawn (or decided, below) a byte-identical resend is a legitimate
 	// resubmit and must create a FRESH submission; answering "duplicate" with the
-	// closed id strands the sender's ship outside every queue (Macondo ship 6014).
+	// closed id strands the sender's ship outside every queue.
 	status, body = f.post(t, "/api/ingest/"+f.programId, ship, sign(f.secret, ship))
 	if status != 202 || body["id"] == subId || body["id"] == "" {
 		t.Fatalf("identical resend after withdraw must open a fresh submission: %d %v", status, body)
@@ -305,6 +318,61 @@ func TestIngestEndToEnd(t *testing.T) {
 		if status != 200 || body["status"] != "duplicate" || body["id"] != parkedId {
 			t.Fatalf("identical retry while %s must rebind to the parked ship: %d %v", parked, status, body)
 		}
+	}
+}
+
+func TestIngestTimestampedSignature(t *testing.T) {
+	f := setup(t, false)
+	now := time.Now().Unix()
+
+	ship := validShip("ts-1")
+	stale := strconv.FormatInt(now-600, 10)
+	status, body := f.postAt(t, "/api/ingest/"+f.programId, ship, signAt(f.secret, now-600, ship), stale)
+	if status != 401 || body["error"] != "bad_signature" {
+		t.Fatalf("a correctly signed request ten minutes old must be refused: %d %v", status, body)
+	}
+	status, body = f.postAt(t, "/api/ingest/"+f.programId, ship, sign(f.secret, ship), strconv.FormatInt(now, 10))
+	if status != 401 || body["error"] != "bad_signature" {
+		t.Fatalf("a body-only signature with a timestamp header must be refused: %d %v", status, body)
+	}
+	status, body = f.postAt(t, "/api/ingest/"+f.programId, ship, signAt(f.secret, now, ship), "soon")
+	if status != 401 || body["error"] != "bad_signature" {
+		t.Fatalf("a non-integer timestamp must be refused: %d %v", status, body)
+	}
+
+	status, body = f.postAt(t, "/api/ingest/"+f.programId, ship, signAt(f.secret, now, ship), strconv.FormatInt(now, 10))
+	if status != 202 || body["status"] != "accepted" {
+		t.Fatalf("timestamped accept: %d %v", status, body)
+	}
+	subId := body["id"].(string)
+
+	withdrawBody := `{"external_id": "ts-1"}`
+	status, body = f.postAt(t, "/api/ingest/"+f.programId+"/withdraw", withdrawBody, signAt(f.secret, now, withdrawBody), strconv.FormatInt(now, 10))
+	if status != 200 || body["status"] != "withdrawn" || body["id"] != subId {
+		t.Fatalf("timestamped withdraw: %d %v", status, body)
+	}
+}
+
+func TestIngestBadSignatureAuditCap(t *testing.T) {
+	f := setup(t, false)
+	ctx := context.Background()
+
+	ship := validShip("flood-1")
+	for i := 0; i < 25; i++ {
+		if status, _ := f.post(t, "/api/ingest/"+f.programId, ship, "deadbeef"); status != 401 {
+			t.Fatalf("unsigned request %d: %d", i, status)
+		}
+	}
+	var badSigRows int
+	if err := f.pool.QueryRow(ctx, `select count(*) from "WebhookDelivery" where "programId" = $1 and status = 'BAD_SIGNATURE'`, f.programId).Scan(&badSigRows); err != nil {
+		t.Fatal(err)
+	}
+	if badSigRows != 20 {
+		t.Fatalf("a flood of unsigned requests must stop at the audit cap, got %d rows", badSigRows)
+	}
+	status, body := f.post(t, "/api/ingest/"+f.programId, ship, sign(f.secret, ship))
+	if status != 202 {
+		t.Fatalf("a signed request during the flood must still be accepted: %d %v", status, body)
 	}
 }
 

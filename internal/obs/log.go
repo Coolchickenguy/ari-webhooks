@@ -20,6 +20,9 @@ func Setup() func(context.Context) {
 		DataCollection: &sentry.DataCollection{
 			HTTPBodies:  []sentry.BodyType{},
 			QueryParams: &sentry.KeyValueCollectionBehavior{Mode: sentry.CollectionOff},
+			HTTPHeaders: &sentry.HeaderCollectionConfig{
+				Request: &sentry.KeyValueCollectionBehavior{Mode: sentry.CollectionOff}, // the ingest signature and the internal bearer token travel in request headers
+			},
 		},
 		BeforeSend:            sanitizeEvent,
 		BeforeSendTransaction: sanitizeEvent,
@@ -44,6 +47,7 @@ func sanitizeEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 	}
 	event.Request.Data = ""        // webhook payloads can contain private submission data
 	event.Request.QueryString = "" // query parameters can carry upstream API credentials
+	event.Request.Headers = nil    // the ingest signature and the internal bearer token travel in headers, whatever the collection setting
 	for _, prefix := range tokenPaths {
 		if before, _, found := strings.Cut(event.Request.URL, prefix); found {
 			event.Request.URL = before + prefix + ":token" // whatever follows the prefix is a secret that must not reach the error tracker

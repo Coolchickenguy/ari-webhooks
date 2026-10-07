@@ -146,7 +146,7 @@ type Fetcher struct {
 	slots        chan struct{}
 	cloneTimeout time.Duration
 	maxCommits   int
-	// AllowPrivateHosts bypasses the SSRF guard for httptest git servers. TEST ONLY.
+	// AllowPrivateHosts bypasses the SSRF guard, including the dial-time check, for httptest git servers. TEST ONLY.
 	AllowPrivateHosts bool
 	// GitHub reads repositories on its host through the api proxy. Nil, or without
 	// the proxy's url and key, every host is cloned.

@@ -76,6 +76,7 @@ func (g gitBackend) open(ctx context.Context, repo repoRef, timeout time.Duratio
 	cloneArgs := func(filtered bool) []string {
 		args := []string{
 			"-c", "http.followRedirects=false", // a server must not bounce git into the internal network after the DNS check
+			"-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=30", // a host trickling bytes must not hold the clone slot for the full timeout
 			"-c", "pack.threads=1", // index-pack defaults to one thread per core; concurrent clones at that width OOM a small box
 			"-c", "core.bigFileThreshold=1m", // index-pack streams blobs past this to disk instead of inflating them in memory
 			"clone", "--bare",
@@ -185,6 +186,7 @@ func (g gitBackend) commits(ctx context.Context, repo repoRef, window Window) (R
 func readBlob(ctx context.Context, repoDir, filePath string, timeout time.Duration) gitRun {
 	return runGit(ctx, []string{
 		"-c", "http.followRedirects=false", // the promisor blob fetch must not bounce past the DNS check either
+		"-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=30", // a host trickling bytes must not hold the clone slot for the full timeout
 		"-c", "core.bigFileThreshold=1m",
 		"cat-file", "blob", "HEAD:" + filePath,
 	}, repoDir, timeout)
