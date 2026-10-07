@@ -72,3 +72,11 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=registry,ref=ghcr.io/${{ env.IMAGE_NAME }}:cache
           cache-to: type=registry,ref=ghcr.io/${{ env.IMAGE_NAME }}:cache,mode=max
+
+      # only after the image is pushed; -f fails the job when the webhook refuses
+      - name: trigger deploy
+        run: |
+          curl -fsS -X POST \
+            ${{ secrets.WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d '{"tag": "${{ github.sha }}"}'
